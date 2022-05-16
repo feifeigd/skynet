@@ -16,6 +16,7 @@ local socket_pool = setmetatable( -- store all socket object
 	}
 )
 
+local socket_onclose = {}
 local socket_message = {}
 
 local function wakeup(s)
@@ -27,7 +28,7 @@ local function wakeup(s)
 end
 
 local function pause_socket(s, size)
-	if s.pause then
+	if s.pause ~= nil then
 		return
 	end
 	if size then
@@ -117,14 +118,16 @@ end
 -- SKYNET_SOCKET_TYPE_CLOSE = 3
 socket_message[3] = function(id)
 	local s = socket_pool[id]
-	if s == nil then
+	if s then
+		s.connected = false
+		wakeup(s)
+	else
 		driver.close(id)
-		return
 	end
-	s.connected = false
-	wakeup(s)
-	if s.on_close then
-		s.on_close(id)
+	local cb = socket_onclose[id]
+	if cb then
+		cb(id)
+		socket_onclose[id] = nil
 	end
 end
 
@@ -216,6 +219,7 @@ local function connect(id, func)
 		callback = func,
 		protocol = "TCP",
 	}
+	assert(not socket_onclose[id], "socket has onclose callback")
 	assert(not socket_pool[id], "socket is not closed")
 	socket_pool[id] = s
 	suspend(s)
@@ -250,7 +254,7 @@ end
 
 function socket.pause(id)
 	local s = socket_pool[id]
-	if s == nil or s.pause then
+	if s == nil then
 		return
 	end
 	pause_socket(s)
@@ -276,6 +280,7 @@ function socket.close(id)
 	end
 	driver.close(id)
 	if s.connected then
+		s.pause = false -- Do not resume this fd if it paused.
 		if s.co then
 			-- reading this socket on another coroutine, so don't shutdown (clear the buffer) immediately
 			-- wait reading coroutine read the buffer.
@@ -287,7 +292,6 @@ function socket.close(id)
 		end
 		s.connected = false
 	end
-	assert(s.lock == nil or next(s.lock) == nil)
 	socket_pool[id] = nil
 end
 
@@ -403,34 +407,6 @@ function socket.listen(host, port, backlog)
 	return driver.listen(host, port, backlog)
 end
 
-function socket.lock(id)
-	local s = socket_pool[id]
-	assert(s)
-	local lock_set = s.lock
-	if not lock_set then
-		lock_set = {}
-		s.lock = lock_set
-	end
-	if #lock_set == 0 then
-		lock_set[1] = true
-	else
-		local co = coroutine.running()
-		table.insert(lock_set, co)
-		skynet.wait(co)
-	end
-end
-
-function socket.unlock(id)
-	local s = socket_pool[id]
-	assert(s)
-	local lock_set = assert(s.lock)
-	table.remove(lock_set,1)
-	local co = lock_set[1]
-	if co then
-		skynet.wakeup(co)
-	end
-end
-
 -- abandon use to forward socket id to other service
 -- you must call socket.start(id) later in other service
 function socket.abandon(id)
@@ -438,6 +414,7 @@ function socket.abandon(id)
 	if s then
 		s.connected = false
 		wakeup(s)
+		socket_onclose[id] = nil
 		socket_pool[id] = nil
 	end
 end
@@ -481,6 +458,7 @@ end
 socket.sendto = assert(driver.udp_send)
 socket.udp_address = assert(driver.udp_address)
 socket.netstat = assert(driver.info)
+socket.resolve = assert(driver.resolve)
 
 function socket.warning(id, callback)
 	local obj = socket_pool[id]
@@ -489,9 +467,7 @@ function socket.warning(id, callback)
 end
 
 function socket.onclose(id, callback)
-	local obj = socket_pool[id]
-	assert(obj)
-	obj.on_close = callback
+	socket_onclose[id] = callback
 end
 
 return socket

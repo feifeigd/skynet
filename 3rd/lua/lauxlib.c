@@ -881,6 +881,7 @@ LUALIB_API lua_Integer luaL_len (lua_State *L, int idx) {
 
 
 LUALIB_API const char *luaL_tolstring (lua_State *L, int idx, size_t *len) {
+  idx = lua_absindex(L,idx);
   if (luaL_callmeta(L, idx, "__tostring")) {  /* metafield? */
     if (!lua_isstring(L, -1))
       luaL_error(L, "'__tostring' must return a string");
@@ -1135,7 +1136,7 @@ luaL_initcodecache(void) {
 }
 
 static const void *
-load(const char *key) {
+load_proto(const char *key) {
   if (CC.L == NULL)
     return NULL;
   SPIN_LOCK(&CC)
@@ -1150,7 +1151,7 @@ load(const char *key) {
 }
 
 static const void *
-save(const char *key, const void * proto) {
+save_proto(const char *key, const void * proto) {
   lua_State *L;
   const void * result = NULL;
 
@@ -1220,10 +1221,10 @@ static int cache_mode(lua_State *L) {
 LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
                                              const char *mode) {
   int level = cache_level(L);
-  if (level == CACHE_OFF) {
+  if (level == CACHE_OFF || filename == NULL) {
     return luaL_loadfilex_(L, filename, mode);
   }
-  const void * proto = load(filename);
+  const void * proto = load_proto(filename);
   if (proto) {
     lua_clonefunction(L, proto);
     return LUA_OK;
@@ -1246,7 +1247,7 @@ LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
   }
   lua_sharefunction(eL, -1);
   proto = lua_topointer(eL, -1);
-  const void * oldv = save(filename, proto);
+  const void * oldv = save_proto(filename, proto);
   if (oldv) {
     lua_close(eL);
     lua_clonefunction(L, oldv);

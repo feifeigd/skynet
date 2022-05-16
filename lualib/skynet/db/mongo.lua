@@ -365,6 +365,18 @@ function mongo_collection:batch_insert(docs)
 	sock:request(pack)
 end
 
+function mongo_collection:safe_batch_insert(docs)
+	for i = 1, #docs do
+		if docs[i]._id == nil then
+			docs[i]._id = bson.objectid()
+		end
+		docs[i] = bson_encode(docs[i])
+	end
+
+	local r = self.database:runCommand("insert", self.name, "documents", docs)
+	return werror(r)
+end
+
 function mongo_collection:update(selector,update,upsert,multi)
 	local flags	= (upsert and 1	or 0) +	(multi and 2 or	0)
 	local sock = self.connection.__sock
@@ -382,6 +394,21 @@ function mongo_collection:safe_update(selector, update, upsert, multi)
 	return werror(r)
 end
 
+function mongo_collection:safe_batch_update(updates)
+	local updates_tb = {}
+	for i = 1, #updates do
+		updates_tb[i] = bson_encode({
+			q = updates[i].query,
+			u = updates[i].update,
+			upsert = updates[i].upsert,
+			multi = updates[i].multi,
+		})
+	end
+
+	local r = self.database:runCommand("update", self.name, "updates", updates_tb)
+	return werror(r)
+end
+
 function mongo_collection:delete(selector, single)
 	local sock = self.connection.__sock
 	local pack = driver.delete(self.full_name, single, bson_encode(selector))
@@ -393,6 +420,18 @@ function mongo_collection:safe_delete(selector, single)
 		q = selector,
 		limit = single and 1 or 0,
 	})})
+	return werror(r)
+end
+
+function mongo_collection:safe_batch_delete(selectors, single)
+	local delete_tb = {}
+	for i = 1, #selectors do
+		delete_tb[i] = bson_encode({
+			q = selectors[i],
+			limit = single and 1 or 0,
+		})
+	end
+	local r = self.database:runCommand("delete", self.name, "deletes", delete_tb)
 	return werror(r)
 end
 
