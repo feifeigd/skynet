@@ -1,6 +1,10 @@
+
+-- 启动
+./skynet ./learn/mini_service/config.lua
+
 -- 搜索路径的配置
 skynet_root = "./"
-cur_root = skynet_root .. "learn"
+cur_root = skynet_root .. "learn/mini_service"
 
 -- 配置搜索路径
 luaservice = skynet_root.."service/?.lua;"..
@@ -9,6 +13,7 @@ luaservice = skynet_root.."service/?.lua;"..
     -- skynet_root.."test/?/init.lua;"..
     cur_root.."/?.lua"
 
+-- 集群配置
 -- 0 表示是单节点服务，不集群，此时不能设置 standalone
 harbor = 1
 if 0 ~= harbor then
