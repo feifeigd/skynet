@@ -9,7 +9,14 @@ luaservice = skynet_root.."service/?.lua;"..
     -- skynet_root.."test/?/init.lua;"..
     cur_root.."/?.lua"
 
-standalone = "127.0.0.1:1111"
-master = "127.0.0.1:1111"
-address = "127.0.0.1:8888"
+-- 0 表示是单节点服务，不集群，此时不能设置 standalone
+harbor = 1
+if 0 ~= harbor then
+    standalone = "127.0.0.1:1111" -- 自己作为master
+    master = "127.0.0.1:1111"
+    -- 本进程监听地址 cslave
+    address = "127.0.0.1:8888"
+end 
+
+-- 服务入口脚本文件
 start = "main"	-- main script
