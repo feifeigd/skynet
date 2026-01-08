@@ -2,11 +2,14 @@ local skynet = require "skynet"
 local socket = require "http.sockethelper"
 local internal = require "http.internal"
 local dns = require "skynet.dns"
+
 local string = string
 local table = table
+local pcall = pcall
+local error = error
+local pairs = pairs
 
 local httpc = {}
-
 
 local async_dns
 
@@ -15,22 +18,38 @@ function httpc.dns(server,port)
 	dns.server(server,port)
 end
 
+local default_port = {
+	http = 80,
+	https = 443,
+}
+
+local function hostname_port(host)
+	if host:find ".*:.*:" then
+		-- If host contains 2 or more ":", it's ipv6 address
+		local ipv6, port = host:match "^%[(.-)%]:(%d+)$"
+		if ipv6 then
+			return ipv6, port
+		else
+			return host
+		end
+	end
+	local hostname, port = host:match "(.-):(%d+)$"
+	if hostname then
+		return hostname, port
+	end
+	return host
+end
 
 local function check_protocol(host)
-	local protocol = host:match("^[Hh][Tt][Tt][Pp][Ss]?://")
+	local protocol, hostname = host:match "^(%a+)://(.*)"
 	if protocol then
-		host = string.gsub(host, "^"..protocol, "")
 		protocol = string.lower(protocol)
-		if protocol == "https://" then
-			return "https", host
-		elseif protocol == "http://" then
-			return "http", host
-		else
-			error(string.format("Invalid protocol: %s", protocol))
-		end
 	else
-		return "http", host
+		protocol = "http"
+		hostname = host
 	end
+	hostname, port = hostname_port(hostname)
+	return protocol, hostname, port or default_port[protocol] or error("Invalid protocol: " .. protocol)
 end
 
 local SSLCTX_CLIENT = nil
@@ -62,36 +81,37 @@ local function gen_interface(protocol, fd, hostname)
 end
 
 local function connect(host, timeout)
-	local protocol
-	protocol, host = check_protocol(host)
-	local hostaddr, port = host:match"([^:]+):?(%d*)$"
-	if port == "" then
-		port = protocol=="http" and 80 or protocol=="https" and 443
-	else
-		port = tonumber(port)
-	end
+	local protocol, host, port = check_protocol(host)
+	local hostaddr = host
 	local hostname
-	if not hostaddr:match(".*%d+$") then
-		hostname = hostaddr
+	if host:find "^[^:]-%D$" then
+		-- it's a hostname (not ip address), because
+		--   ipv6 contains colons
+		--   ipv4 end with a digit
+		hostname = host
 		if async_dns then
-			hostaddr = dns.resolve(hostname)
+			local msg
+			hostaddr, msg = dns.resolve(host)
+			if not hostaddr then
+				error(string.format("%s dns resolve failed msg:%s", host, msg))
+			end
 		end
 	end
+
 	local fd = socket.connect(hostaddr, port, timeout)
 	if not fd then
-		error(string.format("%s connect error host:%s, port:%s, timeout:%s", protocol, hostaddr, port, timeout))
+		error(string.format("%s connect error host:%s, port:%s, timeout:%s", protocol, host, port, timeout))
 	end
-	-- print("protocol hostname port", protocol, hostname, port)
 	local interface = gen_interface(protocol, fd, hostname)
-	if interface.init then
-		interface.init()
-	end
 	if timeout then
 		skynet.timeout(timeout, function()
 			if not interface.finish then
 				socket.shutdown(fd)	-- shutdown the socket fd, need close later.
 			end
 		end)
+	end
+	if interface.init then
+		interface.init(host)
 	end
 	return fd, interface, host
 end
@@ -115,7 +135,7 @@ function httpc.request(method, hostname, url, recvheader, header, content)
 	if ok then
 		return statuscode, body
 	else
-		error(statuscode)
+		error(body or statuscode)
 	end
 end
 

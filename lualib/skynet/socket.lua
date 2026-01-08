@@ -103,13 +103,17 @@ socket_message[1] = function(id, size, data)
 end
 
 -- SKYNET_SOCKET_TYPE_CONNECT = 2
-socket_message[2] = function(id, _ , addr)
+socket_message[2] = function(id, ud , addr)
 	local s = socket_pool[id]
 	if s == nil then
 		return
 	end
 	-- log remote addr
 	if not s.connected then	-- resume may also post connect message
+		if s.listen then
+			s.addr = addr
+			s.port = ud
+		end
 		s.connected = true
 		wakeup(s)
 	end
@@ -150,7 +154,7 @@ socket_message[5] = function(id, _, err)
 		return
 	end
 	if s.callback then
-		skynet.error("socket: accpet error:", err)
+		skynet.error("socket: accept error:", err)
 		return
 	end
 	if s.connected then
@@ -220,7 +224,10 @@ local function connect(id, func)
 		protocol = "TCP",
 	}
 	assert(not socket_onclose[id], "socket has onclose callback")
-	assert(not socket_pool[id], "socket is not closed")
+	local s2 = socket_pool[id]
+	if s2 and not s2.listen then
+		error("socket is not closed")
+	end
 	socket_pool[id] = s
 	suspend(s)
 	local err = s.connecting
@@ -323,7 +330,7 @@ function socket.read(id, sz)
 	if ret then
 		return ret
 	end
-	if not s.connected then
+	if s.closing or not s.connected then
 		return false, driver.readall(s.buffer, s.pool)
 	end
 
@@ -400,11 +407,16 @@ function socket.disconnected(id)
 end
 
 function socket.listen(host, port, backlog)
-	if port == nil then
-		host, port = string.match(host, "([^:]+):(.+)$")
-		port = tonumber(port)
-	end
-	return driver.listen(host, port, backlog)
+	local id = driver.listen(host, port, backlog)
+	local s = {
+		id = id,
+		connected = false,
+		listen = true,
+	}
+	assert(socket_pool[id] == nil)
+	socket_pool[id] = s
+	suspend(s)
+	return id, s.addr, s.port
 end
 
 -- abandon use to forward socket id to other service
@@ -453,6 +465,18 @@ function socket.udp_connect(id, addr, port, callback)
 		create_udp_object(id, callback)
 	end
 	driver.udp_connect(id, addr, port)
+end
+
+function socket.udp_listen(addr, port, callback)
+	local id = driver.udp_listen(addr, port)
+	create_udp_object(id, callback)
+	return id
+end
+
+function socket.udp_dial(addr, port, callback)
+	local id = driver.udp_dial(addr, port)
+	create_udp_object(id, callback)
+	return id
 end
 
 socket.sendto = assert(driver.udp_send)

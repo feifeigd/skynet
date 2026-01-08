@@ -163,7 +163,7 @@ static int
 timing_enable(lua_State *L, int co_index, lua_Number *start_time) {
 	lua_pushvalue(L, co_index);
 	lua_rawget(L, lua_upvalueindex(1));
-	if (lua_isnil(L, -1)) {		// check total time
+	if (lua_isnil(L, -1)) {		// check start time
 		lua_pop(L, 1);
 		return 0;
 	}
@@ -188,6 +188,7 @@ timing_resume(lua_State *L, int co_index, int n) {
 	if (timing_enable(L, co_index, &start_time)) {
 		start_time = get_time();
 #ifdef DEBUG_LOG
+		double ti = diff_time(start_time);
 		fprintf(stderr, "PROFILE [%p] resume %lf\n", co, ti);
 #endif
 		lua_pushvalue(L, co_index);
@@ -233,7 +234,7 @@ static int luaB_auxwrap (lua_State *L) {
   if (r < 0) {
     int stat = lua_status(co);
     if (stat != LUA_OK && stat != LUA_YIELD)
-      lua_resetthread(co);  /* close variables in case of errors */
+      lua_closethread(co, L);  /* close variables in case of errors */
     if (lua_type(L, -1) == LUA_TSTRING) {  /* error object is a string? */
       luaL_where(L, 1);  /* add extra info, if available */
       lua_insert(L, -2);
@@ -498,13 +499,27 @@ lalloc(void * ud, void *ptr, size_t osize, size_t nsize) {
 	return skynet_lalloc(ptr, osize, nsize);
 }
 
+static unsigned
+global_seed() {
+	static ATOM_INT seed = 0;
+	unsigned ret = ATOM_LOAD(&seed);
+	while (ret == 0) {
+		unsigned t = luaL_makeseed(NULL);
+		if (t == 0)
+			t = 1;
+		ATOM_CAS(&seed, 0, t);
+		ret = ATOM_LOAD(&seed);
+	}
+	return ret;
+}
+
 struct snlua *
 snlua_create(void) {
 	struct snlua * l = skynet_malloc(sizeof(*l));
 	memset(l,0,sizeof(*l));
 	l->mem_report = MEMORY_WARNING_REPORT;
 	l->mem_limit = 0;
-	l->L = lua_newstate(lalloc, l);
+	l->L = lua_newstate(lalloc, l, global_seed());
 	l->activeL = NULL;
 	ATOM_INIT(&l->trap , 0);
 	return l;

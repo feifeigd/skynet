@@ -34,14 +34,22 @@ function gateserver.start(handler)
 	assert(handler.message)
 	assert(handler.connect)
 
+	local listen_context = {}
+
 	function CMD.open( source, conf )
 		assert(not socket)
 		local address = conf.address or "0.0.0.0"
-		local port = assert(conf.port)
+		local port = conf.port
 		maxclient = conf.maxclient or 1024
 		nodelay = conf.nodelay
-		skynet.error(string.format("Listen on %s:%d", address, port))
-		socket = socketdriver.listen(address, port)
+		skynet.error("Listen on", address, port)
+		socket = socketdriver.listen(address, port, conf.backlog)
+		listen_context.co = coroutine.running()
+		listen_context.fd = socket
+		skynet.wait(listen_context.co)
+		conf.address = listen_context.addr
+		conf.port = listen_context.port
+		listen_context = nil
 		socketdriver.start(socket)
 		if handler.open then
 			return handler.open(source, conf)
@@ -82,6 +90,7 @@ function gateserver.start(handler)
 	MSG.more = dispatch_queue
 
 	function MSG.open(fd, msg)
+		client_number = client_number + 1
 		if client_number >= maxclient then
 			socketdriver.shutdown(fd)
 			return
@@ -90,7 +99,6 @@ function gateserver.start(handler)
 			socketdriver.nodelay(fd)
 		end
 		connection[fd] = true
-		client_number = client_number + 1
 		handler.connect(fd, msg)
 	end
 
@@ -122,6 +130,19 @@ function gateserver.start(handler)
 	function MSG.warning(fd, size)
 		if handler.warning then
 			handler.warning(fd, size)
+		end
+	end
+
+	function MSG.init(id, addr, port)
+		if listen_context then
+			local co = listen_context.co
+			if co then
+				assert(id == listen_context.fd)
+				listen_context.addr = addr
+				listen_context.port = port
+				skynet.wakeup(co)
+				listen_context.co = nil
+			end
 		end
 	end
 

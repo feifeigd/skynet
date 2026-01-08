@@ -84,14 +84,16 @@ lua_seti(lua_State *L, int index, lua_Integer n) {
 #if defined(SPROTO_WEAK_TYPE)
 static int64_t
 tointegerx (lua_State *L, int idx, int *isnum) {
-	int64_t v;
-	if (lua_isnumber(L, idx)) {
-		v = (int64_t)(round(lua_tonumber(L, idx)));
-		if (isnum) *isnum = 1;
-		return v;
-	} else {
-		return lua_tointegerx(L, idx, isnum);
+	int _isnum = 0;
+	int64_t v = lua_tointegerx(L, idx, &_isnum);
+	if (!_isnum){
+		double num = lua_tonumberx(L, idx, &_isnum);
+		if(_isnum) {
+			v = (int64_t)llround(num);
+		}
 	}
+	if(isnum) *isnum = _isnum;
+	return v;
 }
 
 static int
@@ -240,8 +242,8 @@ get_encodefield(const struct sproto_arg *args) {
 				self->iter_table = top - 1;
 				self->iter_key = top;
 			} else if (!lua_istable(L,self->array_index)) {
-				return luaL_error(L, ".*%s(%d) should be a table or an userdata with metamethods (Is a %s)",
-					args->tagname, args->index, lua_typename(L, lua_type(L, -1)));
+				return luaL_error(L, "%s.%s(%d) should be a table or an userdata with metamethods (Is a %s)",
+					sproto_name(self->st), args->tagname, args->index, lua_typename(L, lua_type(L, -1)));
 			} else {
 				lua_pushnil(L);
 				self->iter_func = 0;
@@ -294,8 +296,8 @@ encode_one(const struct sproto_arg *args, struct encode_ud *self) {
 		} else {
 			v = tointegerx(L, -1, &isnum);
 			if(!isnum) {
-				return luaL_error(L, ".%s[%d] is not an integer (Is a %s)", 
-					args->tagname, args->index, lua_typename(L, lua_type(L, -1)));
+				return luaL_error(L, "%s.%s[%d] is not an integer (Is a %s)",
+					sproto_name(self->st), args->tagname, args->index, lua_typename(L, lua_type(L, -1)));
 			}
 		}
 		lua_pop(L,1);
@@ -313,14 +315,15 @@ encode_one(const struct sproto_arg *args, struct encode_ud *self) {
 	case SPROTO_TDOUBLE: {
 		lua_Number v = lua_tonumber(L, -1);
 		*(double*)args->value = (double)v;
+		lua_pop(L,1);
 		return 8;
 	}
 	case SPROTO_TBOOLEAN: {
 		int isbool;
 		int v = tobooleanx(L, -1, &isbool);
 		if (!isbool) {
-			return luaL_error(L, ".%s[%d] is not a boolean (Is a %s)",
-				args->tagname, args->index, lua_typename(L, lua_type(L, -1)));
+			return luaL_error(L, "%s.%s[%d] is not a boolean (Is a %s)",
+				sproto_name(self->st), args->tagname, args->index, lua_typename(L, lua_type(L, -1)));
 		}
 		*(int *)args->value = v;
 		lua_pop(L,1);
@@ -332,8 +335,8 @@ encode_one(const struct sproto_arg *args, struct encode_ud *self) {
 		int type = lua_type(L, -1); // get the type firstly, lua_tolstring may convert value on stack to string
 		const char * str = tolstringx(L, -1, &sz, &isstring);
 		if (!isstring) {
-			return luaL_error(L, ".%s[%d] is not a string (Is a %s)", 
-				args->tagname, args->index, lua_typename(L, type));
+			return luaL_error(L, "%s.%s[%d] is not a string (Is a %s)",
+				sproto_name(self->st), args->tagname, args->index, lua_typename(L, type));
 		}
 		if (sz > args->length)
 			return SPROTO_CB_ERROR;
@@ -357,7 +360,7 @@ encode_one(const struct sproto_arg *args, struct encode_ud *self) {
 		sub.iter_key = 0;
 		r = sproto_encode(args->subtype, args->value, args->length, encode, &sub);
 		lua_settop(L, top-1);	// pop the value
-		if (r < 0) 
+		if (r < 0)
 			return SPROTO_CB_ERROR;
 		return r;
 	}
@@ -387,15 +390,26 @@ encode(const struct sproto_arg *args) {
 
 static void *
 expand_buffer(lua_State *L, int osz, int nsz) {
-	void *output;
-	do {
-		osz *= 2;
-	} while (osz < nsz);
-	if (osz > ENCODE_MAXSIZE) {
+	// assert(osz > 0 && osz < nsz)
+	if (luai_unlikely(nsz > ENCODE_MAXSIZE)) {
 		luaL_error(L, "object is too large (>%d)", ENCODE_MAXSIZE);
 		return NULL;
 	}
-	output = lua_newuserdata(L, osz);
+
+	// osz = osz * 1.5
+	// factor > 1.618... never reuse alloced space
+	// factor = 1.3, reuse after 3 steps
+	// factor = 1.4, reuse after 4 steps
+	// factor = 1.5, reuse after 5 steps
+	// factor = 1.6, reuse after 8 steps
+	osz += osz >> 1;
+	if (osz < nsz) {
+		osz = nsz;
+	} else if (osz > ENCODE_MAXSIZE) {
+		osz = ENCODE_MAXSIZE;
+	}
+
+	void *output = lua_newuserdata(L, osz);
 	lua_replace(L, lua_upvalueindex(1));
 	lua_pushinteger(L, osz);
 	lua_replace(L, lua_upvalueindex(2));
@@ -438,8 +452,9 @@ lencode(lua_State *L) {
 
 		r = sproto_encode(st, buffer, sz, encode, &self);
 		if (r<0) {
-			buffer = expand_buffer(L, sz, sz*2);
-			sz *= 2;
+			// nsz > osz to double sz
+            buffer = expand_buffer(L, sz, sz + 1);
+			sz = lua_tointeger(L, lua_upvalueindex(2));
 		} else {
 			lua_pushlstring(L, buffer, r);
 			return 1;
@@ -613,7 +628,7 @@ getbuffer(lua_State *L, int index, size_t *sz) {
 /*
 	lightuserdata sproto_type
 	string source	/  (lightuserdata , integer)
-	return table
+	return table, sz(decoded bytes)
  */
 static int
 ldecode(lua_State *L) {
